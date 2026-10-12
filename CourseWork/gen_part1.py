@@ -409,6 +409,21 @@ def build_pdf(output_path):
     ]
 
     doc.build(story)
+    
+    # Если присутствует официальный титульный лист title_page.pdf — заменяем первую страницу
+    title_pdf = os.path.join(os.path.dirname(output_path), "title_page.pdf")
+    if os.path.exists(title_pdf):
+        import pypdf
+        tr = pypdf.PdfReader(title_pdf)
+        br = pypdf.PdfReader(output_path)
+        writer = pypdf.PdfWriter()
+        writer.add_page(tr.pages[0])
+        for page in br.pages[1:]:
+            writer.add_page(page)
+        with open(output_path, "wb") as f:
+            writer.write(f)
+        print(f"Титульный лист заменен из: {title_pdf}")
+
     print(f"PDF успешно создан: {output_path}")
 
 if __name__ == "__main__":
