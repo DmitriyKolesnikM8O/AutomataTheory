@@ -34,7 +34,7 @@ class FSAutomate:
     def execute(self, line, verbose=True):
         """
         Посимвольное выполнение автомата на входной строке.
-        Выводит пошаговую трассировку аналогично образцу из КП.pdf:
+        Выводит пошаговую трассировку:
         - Длина строки (Length)
         - Индекс текущего символа (i)
         - Текущее состояние (curr)
@@ -83,9 +83,7 @@ def create_zipcode_automaton():
     digits = [str(d) for d in range(10)]
     final_states = ["qf"]
     initial_state = "q0"
-
     fsa = FSAutomate(states, digits, final_states, initial_state)
-
     # Правила переходов: каждое состояние считает количество прочитанных цифр
     # q0 - 0 цифр, q1 - 1, q2 - 2, q3 - 3, q4 - 4, qf - ровно 5 цифр
     for digit in digits:
@@ -148,7 +146,7 @@ def main():
     print('Automate 1: "^\\d{5}$" (ZIP-code validator, for ex.: 12345)')
     print("=" * 60)
 
-    # Интерактивный цикл выполнения как в КП.pdf
+    # Интерактивный цикл выполнения
     while True:
         try:
             line = input('\nEnter line ("^\\d{5}$", for ex.: 12345) to execute\nor "exit" to exit:\n')
