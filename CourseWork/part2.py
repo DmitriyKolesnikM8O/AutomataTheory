@@ -468,6 +468,61 @@ class Grammar:
                   f"({', '.join(sorted(created))})")
         return res
 
+    def is_cnf(self, verbose=False):
+        """Проверка, находится ли грамматика в нормальной форме Хомского.
+
+        НФ Хомского (алгоритм 6 из методических материалов) требует, чтобы
+        каждое правило имело один из двух видов:
+
+            A -> a    (один терминал);
+            A -> BC   (ровно два нетерминала).
+
+        Такая форма удобна тем, что для неё работает простой контрольный
+        разбор методом динамического программирования (функция cyk).
+
+        Параметры: verbose — печатать правила, нарушающие форму.
+        Возвращает: True, если все правила имеют вид A -> a или A -> BC.
+        """
+        ok = True
+        for A, rhs in self.rules:
+            good = ((len(rhs) == 1 and rhs[0] in self.T) or
+                    (len(rhs) == 2 and all(s in self.N for s in rhs)))
+            if not good:
+                ok = False
+                if verbose:
+                    print(f"    не в НФ Хомского: {A} -> {self.fmt_rhs(rhs)}")
+        return ok
+
+    def is_greibach(self, verbose=False):
+        """Проверка, находится ли грамматика в нормальной форме Грейбах.
+
+        Нормальная форма Грейбах (определение 39 из учебного пособия)
+        требует, чтобы каждая продукция имела вид
+
+            A -> aα,   где A — нетерминал, a — ТЕРМИНАЛ, α ∈ N*.
+
+        Поэтому проверка сводится к двум условиям:
+            1) в грамматике нет правил с пустой правой частью;
+            2) первый символ каждой правой части — терминал.
+
+        Второе условие автоматически означает, что грамматика не может быть
+        леворекурсивной: правило, начинающееся с нетерминала A, форму не
+        нарушает только если этот нетерминал не выводится сам из себя.
+
+        Зачем это нужно: в НФ Грейбах каждый шаг вывода добавляет ровно один
+        терминал, поэтому МП-автомат может разворачивать правило сразу по
+        очередному символу входа, без ε-переходов на развёртывание.
+
+        Параметры: verbose — печатать правила, нарушающие форму.
+        Возвращает: True, если все правила имеют вид A -> aα.
+        """
+        bad = [(A, rhs) for A, rhs in self.rules
+               if not rhs or rhs[0] not in self.T]
+        if verbose:
+            for A, rhs in bad:
+                print(f"    не в НФ Грейбах: {A} -> {self.fmt_rhs(rhs)}")
+        return not bad
+
     # ------------------------------------------------------- 6. FIRST / FOLLOW
     def first_sets(self):
         """Множества FIRST для всех нетерминалов.
@@ -944,8 +999,12 @@ def main():
         g4.remove_useless().show("Проверка приведения G4:")
         cnf = g4.to_cnf()
         cnf.show("Нормальная форма Хомского:")
+        print(f"  G4 в НФ Хомского? {g4.is_cnf()}")
+        print(f"  G4 в НФ Грейбах?  {g4.is_greibach(verbose=True)}")
+        print(f"  НФХ в НФ Грейбах? {cnf.is_greibach()}")
         g5 = factored_grammar()
         g5.show("G5 — LL(1)-форма после факторизации:")
+        print(f"  G5 в НФ Грейбах?  {g5.is_greibach()}")
         print(f"  G4 является LL(1)? {g4.is_ll1(verbose=True)}")
         print(f"  G5 является LL(1)? {g5.is_ll1(verbose=True)}")
 
@@ -1007,6 +1066,9 @@ def run_tests():
     print(f"  1. Терминалы после приведения: {sorted(g4.T)}")
     print(f"  2. Нетерминалы после приведения: {sorted(g4.N)}")
     print(f"  3. G5 является LL(1): {g5.is_ll1()}")
+    print(f"  4. G4 в НФ Хомского: {g4.is_cnf(verbose=True)}")
+    print(f"  5. G4 в НФ Грейбах: {g4.is_greibach(verbose=True)}")
+    print(f"  6. НФХ в форме Грейбах: {cnf.is_greibach()}")
 
     ok_all = True
 
@@ -1020,6 +1082,9 @@ def run_tests():
 
     check("Эталон: abdfcbdf", in_language("abdfcbdf"), True)
     check("Эталон: abdfjmmmm", in_language("abdfjmmmm"), True)
+    check("G4 не в НФ Хомского", g4.is_cnf(), False)
+    check("G4 в НФ Грейбах", g4.is_greibach(), True)
+    check("НФХ не в форме Грейбах", cnf.is_greibach(), False)
 
     cases = ["abdfcbdf", "abdfjm", "abdfjmm", "abdfjmmmm",
              "abdf", "abdfj", "abdfcbdfm", "abdfcbdfx", "abdfjmj",
