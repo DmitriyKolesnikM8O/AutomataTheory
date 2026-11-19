@@ -407,66 +407,126 @@ class Grammar:
 
     # ---------------------------------------- 5. нормальная форма Хомского
     def to_cnf(self, verbose=True):
-        """Приведение к нормальной форме Хомского (A -> BC или A -> a).
+        """Приведение к нормальной форме Хомского (A -> a или A -> BC).
 
-        В задании этот шаг НЕ требуется — он нужен только как вспомогательный
-        инструмент для независимой проверки разбора (см. функцию cyk):
-        всё, что выводится из грамматики, должно выводиться и после
-        приведения, иначе преобразования ошибочны.
+        Порядок шагов — алгоритм 6, ровно в том виде, в каком он описан
+        в отчёте (порядок важен, шаги не переставляются):
 
-        Шаги: сначала убрать eps-правила и цепные правила, затем
-            1) каждый терминал в правиле длины >= 2 заменить нетерминалом
-               Xa с единственным правилом Xa -> a;
-            2) длинные правые части свернуть в бинарные, вводя новые
-               нетерминалы Q1, Q2, ...
+            1) длинные правила: правые части длины > 2 свернуть в бинарные,
+               вводя новые нетерминалы Q_1, Q_2, ...;
+            2) удалить eps-правила;
+            3) удалить цепные правила;
+            4) удалить бесполезные символы;
+            5) заменить терминалы в правилах длины >= 2 нетерминалами
+               X_a, X_b, ... с единственным правилом X_a -> a.
 
-        Параметры: verbose — печатать список введённых нетерминалов.
+        Почему такой порядок: шаг 1 делается первым, чтобы все последующие
+        преобразования работали с правилами длины не больше 2 и уже не
+        создавали длинных правых частей. Замена терминалов идёт последней,
+        когда окончательно известны все правила и их длины.
+
+        Зачем это нужно: НФ Хомского — вторая нормальная форма, требуемая
+        в курсовом проекте, и основа для контрольного разбора CYK (функция
+        cyk), не зависящего от МП-автомата.
+
+        Параметры: verbose — печатать каждый шаг и промежуточные грамматики.
         Возвращает: эквивалентную грамматику в НФ Хомского.
         """
-        g, _ = self.remove_epsilon(verbose=False)
+        g = self.copy()
+
+        def report(step, title, before, note):
+            """Напечатать итог шага приведения (только при verbose=True).
+
+            Параметры: step — номер шага, title — название шага,
+            before — правила до шага, note — пояснение к результату.
+            """
+            if not verbose:
+                return
+            if before == g.rules:
+                print(f"  Шаг {step}. {title}: изменений нет.")
+            else:
+                print(f"  Шаг {step}. {title}: {note}")
+                print(g.as_text("      "))
+
+        if verbose:
+            print("  Приведение к нормальной форме Хомского "
+                  "(алгоритм 6, пять шагов).")
+
+        # ---- шаг 1: свернуть правые части длины > 2
+        before = list(g.rules)
+        created = []
+        pending = []
+
+        def fold(seq):
+            """Свернуть цепочку длины > 2 в бинарные правила (справа налево).
+
+            Возвращает: цепочку длины не больше 2; новые правила складываются
+            в список pending, новые нетерминалы — в список created.
+            """
+            if len(seq) <= 2:
+                return list(seq)
+            name = f"Q_{len(created) + 1}"
+            while name in g.N or name in g.T:
+                name += "'"
+            created.append(name)
+            g.N.add(name)
+            tail = fold(seq[1:])
+            pending.append((name, tuple(tail)))
+            return [seq[0], name]
+
+        g.rules = [(A, tuple(fold(rhs))) for A, rhs in g.rules] + pending
+        report(1, "Удаление длинных правил (длина > 2)", before,
+               f"правые части свёрнуты в бинарные, введены {', '.join(sorted(created))}")
+
+        # ---- шаг 2: eps-правила
+        before = list(g.rules)
+        g, nullable = g.remove_epsilon(verbose=False)
+        report(2, "Удаление eps-правил", before,
+               "нетерминалы, выводившие eps: "
+               + (", ".join(sorted(nullable)) if nullable else "—"))
+
+        # ---- шаг 3: цепные правила
+        before = list(g.rules)
         g = g.remove_chains(verbose=False)
+        report(3, "Удаление цепных правил", before,
+               "цепные правила заменены правыми частями своих правил")
+
+        # ---- шаг 4: бесполезные символы
+        before = list(g.rules)
         g = g.remove_useless(verbose=False)
+        report(4, "Удаление бесполезных символов", before,
+               "бесплодные и недостижимые символы удалены")
 
-        term_nt, new_rules, created, counter = {}, [], [], [0]
-
-        def fresh(prefix):
-            """Новое имя нетерминала с указанным префиксом, не занятое в грамматике."""
-            while True:
-                counter[0] += 1
-                name = f"{prefix}{counter[0]}"
-                if name not in g.N and name not in g.T:
-                    created.append(name)
-                    return name
+        # ---- шаг 5: терминалы в правилах длины >= 2
+        before = list(g.rules)
+        term_nt, new_rules, created_t = {}, [], []
 
         def term_rule(t):
-            """Нетерминал-«обёртка» для терминала t: возвращает Xa с правилом Xa -> a."""
+            """Нетерминал X_a для терминала a и правило X_a -> a.
+
+            Возвращает: имя нетерминала, заменяющего терминал t.
+            """
             if t not in term_nt:
-                name = "X" + t                     # Xa -> a, Xb -> b, ...
-                while name in g.N or name in g.T or name in created:
+                name = "X_" + t                     # X_a -> a, X_b -> b, ...
+                while name in g.N or name in g.T:
                     name += "'"
-                created.append(name)
                 term_nt[t] = name
+                created_t.append(name)
                 new_rules.append((name, (t,)))
             return term_nt[t]
 
         for A, rhs in g.rules:
-            if len(rhs) == 1:
+            if len(rhs) <= 1:
                 new_rules.append((A, rhs))
-                continue
-            seq = [s if s in g.N else term_rule(s) for s in rhs]
-            while len(seq) > 2:
-                tail = tuple(seq[1:])
-                name = fresh("Q")
-                new_rules.append((name, tail))
-                seq = [seq[0], name]
-            new_rules.append((A, tuple(seq)))
+            else:
+                new_rules.append(
+                    (A, tuple(term_rule(s) if s in g.T else s for s in rhs)))
 
-        res = Grammar(g.N | set(created), g.T, new_rules, g.start)
-        res.rules = list(dict.fromkeys(res.rules))
-        if verbose:
-            print(f"  Вспомогательных нетерминалов: {len(created)} "
-                  f"({', '.join(sorted(created))})")
-        return res
+        g = Grammar(g.N | set(created_t), g.T, new_rules, g.start)
+        g.rules = list(dict.fromkeys(g.rules))
+        report(5, "Удаление терминалов из правил длины >= 2", before,
+               f"введены {', '.join(sorted(created_t))}")
+        return g
 
     def is_cnf(self, verbose=False):
         """Проверка, находится ли грамматика в нормальной форме Хомского.
@@ -639,19 +699,25 @@ class Grammar:
         follow = self.follow_sets(first)
         ok = True
         for A in self.ordered_n():
+            rules = self.rules_for(A)
             sets = []
-            for rhs in self.rules_for(A):
+            for rhs in rules:
                 f, nullable = self.first_of(rhs, first)
                 if nullable:
                     f |= follow[A]
                 sets.append(f)
-            for i in range(len(sets)):
-                for j in range(i + 1, len(sets)):
-                    if sets[i] & sets[j]:
+            for i in range(len(rules)):
+                for j in range(i + 1, len(rules)):
+                    common = sets[i] & sets[j]
+                    if common:
                         ok = False
                         if verbose:
-                            print(f"  Конфликт LL(1) у {A} по символу "
-                                  f"{sorted(sets[i] & sets[j])}")
+                            syms = ", ".join(sorted(common))
+                            print(f"    нетерминал {A}: правила "
+                                  f"«{A} -> {self.fmt_rhs(rules[i])}» и "
+                                  f"«{A} -> {self.fmt_rhs(rules[j])}» начинаются "
+                                  f"с одного символа {syms} — по одному символу "
+                                  f"входа выбрать правило нельзя")
         return ok
 
 
@@ -959,17 +1025,77 @@ def in_language(word):
 # ============================================================================
 #  Демонстрация
 # ============================================================================
+def demo_grammar():
+    """Приведённая грамматика G4, собранная из исходной всеми шагами.
+
+    Возвращает: объект Grammar после удаления бесполезных символов,
+    eps-правил, цепных правил и левой рекурсии.
+    """
+    g = source_grammar().remove_useless(verbose=False)
+    g = g.remove_epsilon(verbose=False)[0]
+    g = g.remove_chains(verbose=False)
+    return g.remove_left_recursion(verbose=False)
+
+
+def interactive():
+    """Интерактивный режим: разбор введённых цепочек по шагам.
+
+    Пользователь вводит цепочку, программа печатает пошаговую трассировку
+    детерминированного автомата M2 (что лежит в магазине и что осталось
+    на входе), сообщает, принадлежит ли цепочка языку, и перепроверяет
+    ответ двумя независимыми способами: недетерминированным автоматом M1
+    и разбором CYK по грамматике в НФ Хомского. Пустая строка — выход.
+    """
+    g4 = demo_grammar()
+    g5 = factored_grammar()
+    nd = build_pda_from_grammar(g4)
+    det = build_ll1_pda(g5)
+    cnf = g4.to_cnf(verbose=False)
+
+    print("=" * 70)
+    print("ИНТЕРАКТИВНЫЙ РЕЖИМ: проверка цепочек")
+    print("=" * 70)
+    print(f"  Алфавит: {', '.join(sorted(g4.T))}")
+    print("  Язык:    L(G) = {abdfcbdf} ∪ {abdf j m^n | n >= 1}")
+    print("  Введите цепочку и нажмите Enter. Пустая строка — выход.")
+    while True:
+        try:
+            word = input("\nЦепочка: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not word:
+            break
+        unknown = sorted(set(word) - g4.T)
+        if unknown:
+            print(f"  В цепочке есть символы, которых нет в алфавите: "
+                  f"{', '.join(unknown)}")
+            continue
+        det.run(word, verbose=True)
+        print(f"  Перепроверка: недетерминированный M1 — "
+              f"{'допускает' if nd.accepts(word) else 'не допускает'}, "
+              f"разбор CYK по НФ Хомского — "
+              f"{'допускает' if cyk(cnf, word) else 'не допускает'}.")
+
+
 def main():
     """Демонстрация работы программы.
 
     Печатает исходную грамматику, затем по шагам все преобразования
-    (G -> G1 -> G2 -> G3 -> G4 -> G5), таблицы FIRST/FOLLOW, переходы
-    недетерминированного автомата, управляющую таблицу LL(1) и трассировку
-    разбора нескольких цепочек. В конце всегда запускает автотесты.
+    (G -> G1 -> G2 -> G3 -> G4 -> G5), приведение к обеим нормальным формам,
+    таблицы FIRST/FOLLOW, переходы недетерминированного автомата,
+    управляющую таблицу LL(1) и трассировку разбора нескольких цепочек.
+    В конце всегда запускает автотесты.
 
-    Ключ --test печатает только автотесты (без пошагового вывода).
+    Ключи запуска:
+        --test        — только автотесты, без пошагового вывода;
+        --interactive — интерактивный режим проверки введённых цепочек.
     """
-    tests_only = len(sys.argv) > 1 and sys.argv[1] == "--test"
+    args = sys.argv[1:]
+    if args and args[0] in ("--interactive", "-i"):
+        interactive()
+        return
+    tests_only = "--test" in args
 
     if not tests_only:
         g0 = source_grammar()
@@ -994,25 +1120,42 @@ def main():
         g4.show("G4 — после устранения левой рекурсии (приведённая):")
 
         print("\n" + "=" * 70)
-        print("ПУНКТ 6. Форма грамматики и приведение")
+        print("ПУНКТ 6. Форма грамматики и приведение к нормальным формам")
         print("=" * 70)
         g4.remove_useless().show("Проверка приведения G4:")
+        print("\n  Форма G4: контекстно-свободная (тип 2), неукорачивающая,")
+        print("  приведённая, однозначная, без левой рекурсии.")
+
+        print("\n  Нормальная форма Хомского (каждое правило A -> a или A -> BC).")
+        print("  G4 в этой форме не находится: в ней есть правила вида S -> aAB")
+        print("  (терминал и два нетерминала), A -> bC и т. п. Выполняем приведение:")
         cnf = g4.to_cnf()
-        cnf.show("Нормальная форма Хомского:")
-        print(f"  G4 в НФ Хомского? {g4.is_cnf()}")
-        print(f"  G4 в НФ Грейбах?  {g4.is_greibach(verbose=True)}")
-        print(f"  НФХ в НФ Грейбах? {cnf.is_greibach()}")
-        g5 = factored_grammar()
-        g5.show("G5 — LL(1)-форма после факторизации:")
-        print(f"  G5 в НФ Грейбах?  {g5.is_greibach()}")
-        print(f"  G4 является LL(1)? {g4.is_ll1(verbose=True)}")
-        print(f"  G5 является LL(1)? {g5.is_ll1(verbose=True)}")
+        cnf.show("\n  Получена грамматика G_H в нормальной форме Хомского:")
+
+        print("\n  Нормальная форма Грейбах: каждое правило имеет вид A -> aα,")
+        print("  где a — терминал, α — цепочка нетерминалов (возможно, пустая).")
+        print("  G4 уже имеет эту форму: каждая правая часть начинается")
+        print("  с терминала, поэтому приведение не требуется — только проверка.")
+        print("    все правила G4 начинаются с терминала — "
+              + ("да" if g4.is_greibach() else "нет") + ".")
 
         print("\n" + "=" * 70)
         print("ПУНКТ 7. Проектирование МП-автомата")
         print("=" * 70)
+        print("  Сначала проверим, годится ли G4 для детерминированного LL(1)-разбора.")
+        print("  Проверка G4 на LL(1)-грамматику:")
+        ll1_ok = g4.is_ll1(verbose=True)
+        print("    Вывод: G4 " + ("является" if ll1_ok else "не является")
+              + " LL(1)-грамматикой.")
+        if not ll1_ok:
+            print("    Чтобы разбор был детерминированным, применяем левую факторизацию:")
+            print("    общий префикс m у правил T -> mT' | m выносится в отдельное правило.")
+        g5 = factored_grammar()
+        g5.show("  G5 — грамматика после левой факторизации:")
+        print(f"  Проверка: G5 является LL(1)-грамматикой — "
+              f"{'да' if g5.is_ll1() else 'нет'}.")
         pda = build_pda_from_grammar(g4)
-        print("  Недетерминированный МП-автомат по G4 (одно состояние q):")
+        print("  Недетерминированный МП-автомат по G4 (состояния q0, q, qf):")
         for key, moves in sorted(pda.delta.items()):
             q, sym, top = key
             s = "eps" if sym == EPS else sym
@@ -1056,48 +1199,61 @@ def run_tests():
     print("АВТОТЕСТЫ")
     print("=" * 70)
 
-    g4 = (source_grammar().remove_useless()
-          .remove_epsilon()[0].remove_chains().remove_left_recursion())
+    g4 = demo_grammar()
     g5 = factored_grammar()
     nd = build_pda_from_grammar(g4)
     det = build_ll1_pda(g5)
-    cnf = g4.to_cnf()
+    cnf = g4.to_cnf(verbose=False)
 
     print(f"  1. Терминалы после приведения: {sorted(g4.T)}")
     print(f"  2. Нетерминалы после приведения: {sorted(g4.N)}")
-    print(f"  3. G5 является LL(1): {g5.is_ll1()}")
-    print(f"  4. G4 в НФ Хомского: {g4.is_cnf(verbose=True)}")
-    print(f"  5. G4 в НФ Грейбах: {g4.is_greibach(verbose=True)}")
-    print(f"  6. НФХ в форме Грейбах: {cnf.is_greibach()}")
+    print("  3. Формы грамматик:")
+    print(f"     G4  — нормальная форма Грейбах:   {'да' if g4.is_greibach() else 'нет'}")
+    print(f"     G_H — нормальная форма Хомского:  {'да' if cnf.is_cnf() else 'нет'}")
+    print(f"     G5  — LL(1)-грамматика:           {'да' if g5.is_ll1() else 'нет'}")
 
     ok_all = True
 
-    def check(name, got, expected):
-        """Сравнить полученный результат с ожидаемым и напечатать итог строки."""
+    def check_true(name, condition):
+        """Проверить утверждение и напечатать итог в виде понятной фразы."""
         nonlocal ok_all
-        status = "OK  " if got == expected else "FAIL"
-        if got != expected:
+        if not condition:
             ok_all = False
-        print(f"  [{status}] {name}: получено {got}, ожидалось {expected}")
+        print(f"  [{'OK  ' if condition else 'FAIL'}] {name}")
 
-    check("Эталон: abdfcbdf", in_language("abdfcbdf"), True)
-    check("Эталон: abdfjmmmm", in_language("abdfjmmmm"), True)
-    check("G4 не в НФ Хомского", g4.is_cnf(), False)
-    check("G4 в НФ Грейбах", g4.is_greibach(), True)
-    check("НФХ не в форме Грейбах", cnf.is_greibach(), False)
+    check_true("Эталон: abdfcbdf принадлежит языку", in_language("abdfcbdf"))
+    check_true("Эталон: abdfjmmmm принадлежит языку", in_language("abdfjmmmm"))
+    check_true("G4 не является грамматикой в нормальной форме Хомского",
+               not g4.is_cnf())
+    check_true("G4 уже имеет нормальную форму Грейбах", g4.is_greibach())
+    check_true("G_H находится в нормальной форме Хомского", cnf.is_cnf())
+    check_true("G5 является LL(1)-грамматикой", g5.is_ll1())
 
     cases = ["abdfcbdf", "abdfjm", "abdfjmm", "abdfjmmmm",
              "abdf", "abdfj", "abdfcbdfm", "abdfcbdfx", "abdfjmj",
              "abdfcb", "dfcbdf", "abdfjc"]
+
+    def check_word(word):
+        """Сверить ответы трёх способов разбора с эталоном и напечатать строку."""
+        nonlocal ok_all
+        expected = in_language(word)
+        m1 = nd.accepts(word)
+        m2 = det.run(word, verbose=False)
+        cyk_ok = cyk(cnf, word)
+        good = (m1 == m2 == cyk_ok == expected)
+        if not good:
+            ok_all = False
+        word_or_no = lambda flag: "допускает" if flag else "не допускает"
+        print(f"  [{'OK  ' if good else 'FAIL'}] \"{word}\": "
+              f"M1 — {word_or_no(m1)}, M2 — {word_or_no(m2)}, "
+              f"CYK — {word_or_no(cyk_ok)}; эталон — {word_or_no(expected)}")
+
     for w in cases:
-        exp = in_language(w)
-        check(f"НД МП-автомат \"{w}\"", nd.accepts(w), exp)
-        check(f"LL(1) автомат \"{w}\"", det.run(w, verbose=False), exp)
-        check(f"CYK (НФ Хомского) \"{w}\"", cyk(cnf, w), exp)
+        check_word(w)
 
     # исчерпывающая проверка всех цепочек длины 0..4 над алфавитом G4
     alphabet = sorted(g4.T)
-    print(f"  5. Перебор всех цепочек длины 0..4 над {alphabet}:")
+    print(f"  4. Перебор всех цепочек длины 0..4 над {alphabet}:")
     from itertools import product
     total = bad = 0
     for length in range(5):
@@ -1107,7 +1263,7 @@ def run_tests():
             if nd.accepts(w) or det.run(w, verbose=False):
                 bad += 1
                 print(f"     Ложное допускание: \"{w}\"")
-    check(f"Всего проверено {total} цепочек, ложных допусканий", bad, 0)
+    check_true(f"Перебор {total} цепочек: ни одна не допущена ошибочно", bad == 0)
 
     print("-" * 70)
     print("ИТОГ: " + ("ВСЕ ТЕСТЫ ПРОЙДЕНЫ" if ok_all else "ЕСТЬ ОШИБКИ"))
